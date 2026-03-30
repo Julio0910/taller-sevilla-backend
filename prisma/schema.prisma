@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ------------------------------------------------------
+// 1. CONFIGURACIÓN Y SEGURIDAD
+// ------------------------------------------------------
+
+enum Role {
+  ADMIN     // Dueño/Administrador: Acceso total a costos y reportes
+  CASHIER   // Cajero: Solo puede facturar y ver existencias
+  MECHANIC  // Taller: Solo puede buscar productos y ver existencias
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String   // Se guardará encriptada (hasheada)
+  name      String
+  role      Role     @default(CASHIER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ------------------------------------------------------
+// 2. INVENTARIO Y CATÁLOGO
+// ------------------------------------------------------
+
+model Category {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique // Ej: "Lubricantes", "Repuestos", "Importaciones"
+  description String?
+  products    Product[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Product {
+  id            Int             @id @default(autoincrement())
+  barcode       String?         @unique 
+  name          String
+  description   String?
+  costPrice     Float           
+  salePrice     Float           
+  stock         Int             @default(0)
+  minStock      Int             @default(5) 
+  isService     Boolean         @default(false) // <-- ¡NUEVO CAMPO!
+  categoryId    Int
+  category      Category        @relation(fields: [categoryId], references: [id])
+  invoiceItems  InvoiceItem[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+// ------------------------------------------------------
+// 3. FACTURACIÓN Y CLIENTES (Formato SAR)
+// ------------------------------------------------------
+
+model Client {
+  id        Int       @id @default(autoincrement())
+  name      String
+  rtn       String?   @unique // RTN para facturas válidas
+  email     String?
+  phone     String?
+  address   String?
+  invoices  Invoice[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+enum InvoiceStatus {
+  PAID      // Pagada
+  PENDING   // Pendiente
+  CANCELLED // Anulada
+}
+
+model Invoice {
+  id            Int           @id @default(autoincrement())
+  invoiceNumber String        @unique
+  subtotal      Float
+  taxAmount     Float
+  totalAmount   Float
+  paymentMethod String
+  createdAt     DateTime      @default(now())
+  
+  clientId      Int?
+  client        Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  items         InvoiceItem[]
+
+  // --- LOS 3 CAMPOS NUEVOS PARA EL TALLER ---
+  laborDesc     String?
+  laborPrice    Float?        @default(0)
+  surcharge     Float?        @default(0)
+}
+
+// ------------------------------------------------------
+// 4. DETALLE DE MOVIMIENTOS
+// ------------------------------------------------------
+
+
+
+model InvoiceItem {
+  id        Int     @id @default(autoincrement())
+  invoiceId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+  
+  productId Int?    // <--- El ID debe ser opcional (con signo ?)
+  // Agregamos fields y references aquí con onDelete: SetNull
+  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull) 
+  
+  quantity  Int
+  unitPrice Float
+  subtotal  Float
+}
+// Tabla para guardar los Tickets Abiertos (Borradores) del Taller
+model Draft {
+  id          Int      @id @default(autoincrement())
+  name        String   // Ej: "Toyota Hilux - Revisión de frenos"
+  posState    Json     // Aquí guardaremos todo el carrito, cliente, mano de obra, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+// Tabla para registrar a los mecánicos/trabajadores
+model Worker {
+  id        Int         @id @default(autoincrement())
+  name      String
+  phone     String?
+  jobs      WorkerJob[] // Relación con los trabajos que ha hecho
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+}
+
+// Tabla para registrar cada trabajo que hace el mecánico (adentro o afuera)
+model WorkerJob {
+  id          Int      @id @default(autoincrement())
+  workerId    Int
+  worker      Worker   @relation(fields: [workerId], references: [id])
+  
+  description String   // Ej: "Cambio de clutch a domicilio"
+  jobValue    Float    // El total que pagó el cliente (Lps. que entran a caja)
+  workerCut   Float    // La comisión que se le paga al trabajador
+  isOutside   Boolean  @default(false) // ¿Fue un trabajo afuera del taller?
+  
+  createdAt   DateTime @default(now())
+}
