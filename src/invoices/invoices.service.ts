@@ -1,38 +1,37 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-// import { CreateInvoiceDto } from './dto/create-invoice.dto'; // Lo dejamos como "any" abajo para flexibilidad temporal
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class InvoicesService {
   constructor(private prisma: PrismaService) {}
 
-  // Cambiamos el tipo a "any" para aceptar los campos nuevos sin que TypeScript se queje
   async create(createInvoiceDto: any) { 
-    // Usamos $transaction: o se guarda TODO o no se guarda NADA.
     return this.prisma.$transaction(async (tx) => {
       
-      // Extraemos absolutamente todos los datos que manda el Frontend
-      const { paymentMethod, clientId, items, laborDesc, laborPrice, surcharge } = createInvoiceDto;
+      // 1. Extraemos TODO, incluyendo el impuesto y el número que manda el Frontend
+      const { paymentMethod, clientId, items, laborDesc, laborPrice, surcharge, taxAmount: frontendTax, invoiceNumber: frontendInvoiceNumber } = createInvoiceDto;
 
-      // 1. Calculamos la matemática financiera (SOLO REPUESTOS)
       let subtotalRepuestos = 0;
       for (const item of items) {
         subtotalRepuestos += item.quantity * item.unitPrice;
       }
       
-      const taxAmount = subtotalRepuestos * 0.15; // Calculamos el 15% de ISV
+      // --- LA MAGIA INTELIGENTE AQUÍ ---
+      // Si el frontend nos manda un impuesto explícito (como un 0), lo usamos. 
+      // Si viene vacío (como en la caja vieja), le sacamos el 15% automáticamente.
+      const taxAmount = frontendTax !== undefined ? Number(frontendTax) : subtotalRepuestos * 0.15;
 
-      // Aseguramos que la mano de obra y el recargo sean números (si vienen vacíos, valen 0)
+      // Si el frontend manda un prefijo (ej. 'INT-123...'), lo usamos. Si no, le ponemos 'FAC-'
+      const invoiceNumber = frontendInvoiceNumber ? frontendInvoiceNumber : `FAC-${Date.now()}`; 
+      // ---------------------------------
+
       const manoObra = laborPrice ? Number(laborPrice) : 0;
       const recargoBanco = surcharge ? Number(surcharge) : 0;
 
-      // Sumamos TODO para el Total General
+      // Sumamos con el impuesto inteligente que calculamos arriba
       const totalAmount = subtotalRepuestos + taxAmount + manoObra + recargoBanco;
 
-      // 2. Generamos un Correlativo temporal
-      const invoiceNumber = `FAC-${Date.now()}`; 
-
-      // 3. Guardamos la Factura y su Detalle al mismo tiempo
+      // Guardamos la Factura
       const invoice = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -41,13 +40,9 @@ export class InvoicesService {
           totalAmount,
           paymentMethod: paymentMethod,
           clientId: clientId,
-          
-          // --- LOS 3 CAMPOS NUEVOS DE MANO DE OBRA Y BANCOS ---
           laborDesc: laborDesc,
           laborPrice: manoObra,
           surcharge: recargoBanco,
-          
-          // La magia relacional: creamos los detalles de la factura
           items: {
             create: items.map((item: any) => ({
               quantity: item.quantity,
@@ -62,7 +57,7 @@ export class InvoicesService {
         },
       });
 
-      // 4. Descontamos el inventario (Solo si NO es un servicio)
+      // Descontamos el inventario
       for (const item of items) {
         const product = await tx.product.findUnique({ where: { id: item.productId } });
         
@@ -70,13 +65,11 @@ export class InvoicesService {
           throw new BadRequestException(`Producto no encontrado ID: ${item.productId}`);
         }
 
-        // Solo validamos y restamos stock si el producto NO es un servicio
         if (product.isService === false) {
           if (product.stock < item.quantity) {
             throw new BadRequestException(`No hay suficiente stock para el producto ID: ${item.productId}`);
           }
 
-          // Restamos el inventario físico
           await tx.product.update({
             where: { id: item.productId },
             data: {
@@ -86,7 +79,6 @@ export class InvoicesService {
         }
       }
 
-      // Si todo sale bien, devolvemos la factura terminada
       return invoice;
     });
   }
@@ -99,7 +91,7 @@ export class InvoicesService {
             product: true
           }
         },
-        client: true // Incluimos al cliente por si acaso lo necesitamos
+        client: true 
       }
     });
   }
